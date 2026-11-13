@@ -197,9 +197,8 @@ logger = logging.getLogger(__name__)
 def _comfy_metadata_disabled() -> bool:
     """Return True when ComfyUI was started with ``--disable-metadata``.
 
-    Core SaveImage embeds neither the prompt graph nor the workflow under that
-    flag. Outside a ComfyUI runtime (standalone mode, tests) there is no flag to
-    honour.
+    Core SaveImage does not embed the prompt graph under that flag. Outside a
+    ComfyUI runtime (standalone mode, tests) there is no flag to honour.
     """
     try:
         from comfy.cli_args import args  # pyright: ignore[reportMissingImports]
@@ -981,14 +980,16 @@ class SaveImageLM:
         """Save images with metadata"""
         results = []
 
-        # --disable-metadata keeps the ComfyUI graph (prompt and workflow) out of
-        # saved files, as in core SaveImage. The A1111 `parameters` text stays
-        # under this node's own save_with_metadata switch.
         prompt_json, workflow_json = None, None
-        if embed_workflow and not _comfy_metadata_disabled():
+        if embed_workflow:
             prompt_json, workflow_json = self._serialize_graph_metadata(
                 prompt, extra_pnginfo
             )
+        # --disable-metadata keeps the prompt graph out, as in core SaveImage.
+        # `parameters` and `workflow` keep their behaviour from before the
+        # prompt chunk was added.
+        if _comfy_metadata_disabled():
+            prompt_json = None
 
         # Get metadata using the metadata collector
         raw_metadata = get_metadata()

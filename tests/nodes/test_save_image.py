@@ -450,8 +450,8 @@ def test_save_image_webp_keeps_parameters_when_workflow_missing(monkeypatch, tmp
 
 
 def test_save_image_honours_comfy_disable_metadata_flag(monkeypatch, tmp_path):
-    """--disable-metadata drops the ComfyUI graph chunks, as in core SaveImage;
-    the parameters text still follows save_with_metadata."""
+    """--disable-metadata leaves out the prompt graph, as in core SaveImage;
+    parameters and workflow are written as they were before prompt existed."""
     _configure_save_paths(monkeypatch, tmp_path)
     _configure_metadata(monkeypatch, {"prompt": "prompt text", "seed": 123})
     cli_args = types.ModuleType("comfy.cli_args")
@@ -474,7 +474,7 @@ def test_save_image_honours_comfy_disable_metadata_flag(monkeypatch, tmp_path):
             "prompt text\nSeed: 123, engine: ComfyUI, Version: ComfyUI"
         )
         assert "prompt" not in img.info
-        assert "workflow" not in img.info
+        assert json.loads(img.info["workflow"]) == {"nodes": []}
 
 
 def test_save_image_does_not_append_loras_to_prompt_by_default(monkeypatch, tmp_path):
