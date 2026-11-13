@@ -458,7 +458,7 @@ class AutomaticMetadataParser(RecipeMetadataParser):
                     return
                 loras.append(civitai_entry)
 
-            def merge_or_append_local(local_entry):
+            def merge_or_append_local(local_entry, preserve_existing_weight=False):
                 local_id = get_version_id(local_entry)
                 local_hash = (local_entry.get('hash') or '').lower()
                 for existing in loras:
@@ -470,7 +470,10 @@ class AutomaticMetadataParser(RecipeMetadataParser):
                     ):
                         continue
 
-                    existing['weight'] = local_entry['weight']
+                    # A weight from Civitai resources must survive a hash
+                    # entry that only carries the default weight.
+                    if not preserve_existing_weight:
+                        existing['weight'] = local_entry['weight']
                     existing['hash'] = local_entry['hash']
                     existing['file_name'] = local_entry['file_name']
                     existing['existsLocally'] = True
@@ -554,7 +557,7 @@ class AutomaticMetadataParser(RecipeMetadataParser):
                         local_lora = await recipe_scanner.get_local_lora(lora_name, recipe_base_model)
                         if local_lora:
                             local_entry = self.populate_lora_from_local(lora_entry, local_lora)
-                            merge_or_append_local(local_entry)
+                            merge_or_append_local(local_entry, preserve_existing_weight=not prompt_entries)
                             continue
                     lora_entry['hash'] = ''
                     lora_entry['hashInvalid'] = True
@@ -566,7 +569,7 @@ class AutomaticMetadataParser(RecipeMetadataParser):
                     local_lora = await recipe_scanner.get_local_lora_by_hash(lora_hash)
                     if local_lora:
                         local_entry = self.populate_lora_from_local(lora_entry, local_lora)
-                        merge_or_append_local(local_entry)
+                        merge_or_append_local(local_entry, preserve_existing_weight=not prompt_entries)
                         continue
 
                 hash_resolved = False
@@ -595,7 +598,7 @@ class AutomaticMetadataParser(RecipeMetadataParser):
                     local_lora = await recipe_scanner.get_local_lora(lora_name, recipe_base_model)
                     if local_lora:
                         local_entry = self.populate_lora_from_local(lora_entry, local_lora)
-                        merge_or_append_local(local_entry)
+                        merge_or_append_local(local_entry, preserve_existing_weight=not prompt_entries)
                         continue
 
                 if lora_hash and not resource_lora_count:

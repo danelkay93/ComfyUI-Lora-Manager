@@ -661,3 +661,42 @@ async def test_parse_metadata_resolves_civitai_resources_from_local_library(monk
     assert parsed_lora["weight"] == 0.7
     assert result["base_model"] == "sdxl"
 
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "lora_hash",
+    ["a" * 64, "aaaaaaaaaa"],
+    ids=["local-by-hash", "local-by-name"],
+)
+async def test_parse_metadata_keeps_civitai_resource_weight_over_local_hash_entry(
+    monkeypatch, lora_hash
+):
+    """Save Image (LoraManager) writes the strength only in Civitai resources;
+    the Hashes entry for the same local LoRA must not reset it to 1.0."""
+
+    async def no_metadata_provider():
+        return None
+
+    monkeypatch.setattr(
+        "py.recipes.parsers.automatic.get_default_metadata_provider",
+        no_metadata_provider,
+    )
+    lora = local_lora()
+    lora["civitai"] = {"id": 100, "modelId": 200, "name": "v1"}
+    scanner = LocalRecipeScanner({"local_only": lora}, models_by_version={100: lora})
+    metadata_text = (
+        "portrait\n"
+        "Steps: 10, Sampler: Euler simple, CFG scale: 1.0, Seed: 101, "
+        "Size: 1024x1024, engine: ComfyUI, "
+        f'Hashes: {{"LORA:local_only":"{lora_hash}"}}, Version: ComfyUI, '
+        'Civitai resources: [{"weight":0.3,'
+        '"air":"urn:air:krea2:lora:civitai:200@100","versionName":"v1"}]'
+    )
+
+    result = await AutomaticMetadataParser().parse_metadata(metadata_text, scanner)
+
+    assert len(result["loras"]) == 1
+    assert result["loras"][0]["file_name"] == "local_only"
+    assert result["loras"][0]["existsLocally"] is True
+    assert result["loras"][0]["weight"] == 0.3
