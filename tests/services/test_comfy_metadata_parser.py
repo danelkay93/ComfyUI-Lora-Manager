@@ -180,7 +180,7 @@ async def test_parse_metadata_resolves_standard_and_manager_local_loras(monkeypa
             },
         },
         "2": {
-            "class_type": "LoraLoaderLM",
+            "class_type": "Lora Loader (LoraManager)",
             "inputs": {
                 "loras": {
                     "__value__": [
@@ -201,6 +201,139 @@ async def test_parse_metadata_resolves_standard_and_manager_local_loras(monkeypa
     assert all(entry["existsLocally"] is True for entry in result["loras"])
     assert all(entry["isDeleted"] is False for entry in result["loras"])
     assert scanner.queries == ["styles/standard.safetensors", "manager"]
+
+
+async def _no_civitai_provider():
+    class Provider:
+        async def get_model_version_info(self, version_id):
+            raise AssertionError("Local LoRAs must not query Civitai")
+
+    return Provider()
+
+
+@pytest.mark.asyncio
+async def test_parse_metadata_keeps_reading_legacy_manager_class_name(monkeypatch):
+    monkeypatch.setattr(
+        "py.recipes.parsers.comfy.get_default_metadata_provider",
+        _no_civitai_provider,
+    )
+    scanner = LocalRecipeScanner({"legacy": local_lora("legacy")})
+    metadata_json = {
+        "1": {
+            "class_type": "LoraLoaderLM",
+            "inputs": {
+                "loras": {"__value__": [{"name": "legacy", "strength": 0.6, "active": True}]}
+            },
+        },
+    }
+
+    result = await ComfyMetadataParser().parse_metadata(json.dumps(metadata_json), scanner)
+
+    assert [entry["file_name"] for entry in result["loras"]] == ["legacy"]
+    assert [entry["weight"] for entry in result["loras"]] == [0.6]
+
+
+@pytest.mark.asyncio
+async def test_parse_metadata_reads_model_only_lora_loader(monkeypatch):
+    monkeypatch.setattr(
+        "py.recipes.parsers.comfy.get_default_metadata_provider",
+        _no_civitai_provider,
+    )
+    scanner = LocalRecipeScanner({"detail/model_only.safetensors": local_lora("model_only")})
+    metadata_json = {
+        "1": {
+            "class_type": "LoraLoaderModelOnly",
+            "inputs": {
+                "model": ["4", 0],
+                "lora_name": "detail/model_only.safetensors",
+                "strength_model": 0.35,
+            },
+        },
+    }
+
+    result = await ComfyMetadataParser().parse_metadata(json.dumps(metadata_json), scanner)
+
+    assert [entry["file_name"] for entry in result["loras"]] == ["model_only"]
+    assert [entry["weight"] for entry in result["loras"]] == [0.35]
+    assert result["loras"][0]["existsLocally"] is True
+    assert scanner.queries == ["detail/model_only.safetensors"]
+
+
+@pytest.mark.asyncio
+async def test_parse_metadata_reads_literal_lora_text_loader_syntax(monkeypatch):
+    monkeypatch.setattr(
+        "py.recipes.parsers.comfy.get_default_metadata_provider",
+        _no_civitai_provider,
+    )
+    scanner = LocalRecipeScanner({
+        "styles/text_style": local_lora("styles/text_style"),
+        "split": local_lora("split"),
+    })
+    metadata_json = {
+        "1": {
+            "class_type": "LoRA Text Loader (LoraManager)",
+            "inputs": {
+                "model": ["4", 0],
+                "lora_syntax": "<lora:styles/text_style:0.6>, <lora:split:0.9:0.4>",
+            },
+        },
+    }
+
+    result = await ComfyMetadataParser().parse_metadata(json.dumps(metadata_json), scanner)
+
+    assert [entry["file_name"] for entry in result["loras"]] == ["text_style", "split"]
+    assert [entry["weight"] for entry in result["loras"]] == [0.6, 0.9]
+    assert scanner.queries == ["styles/text_style", "split"]
+
+
+@pytest.mark.asyncio
+async def test_parse_metadata_skips_linked_lora_text_loader_syntax(monkeypatch):
+    monkeypatch.setattr(
+        "py.recipes.parsers.comfy.get_default_metadata_provider",
+        _no_civitai_provider,
+    )
+    scanner = LocalRecipeScanner({"text_style": local_lora("text_style")})
+    metadata_json = {
+        "1": {
+            "class_type": "LoRA Text Loader (LoraManager)",
+            "inputs": {"model": ["4", 0], "lora_syntax": ["12", 0]},
+        },
+    }
+
+    result = await ComfyMetadataParser().parse_metadata(json.dumps(metadata_json), scanner)
+
+    assert "error" not in result
+    assert result["loras"] == []
+    assert scanner.queries == []
+
+
+@pytest.mark.asyncio
+async def test_parse_metadata_reads_manager_lora_stacker(monkeypatch):
+    monkeypatch.setattr(
+        "py.recipes.parsers.comfy.get_default_metadata_provider",
+        _no_civitai_provider,
+    )
+    scanner = LocalRecipeScanner({"stacked": local_lora("stacked")})
+    metadata_json = {
+        "1": {
+            "class_type": "Lora Stacker (LoraManager)",
+            "inputs": {
+                "text": "<lora:stacked:0.45>",
+                "loras": {
+                    "__value__": [
+                        {"name": "stacked", "strength": 0.45, "active": True},
+                        {"name": "inactive", "strength": 1.0, "active": False},
+                    ]
+                },
+            },
+        },
+    }
+
+    result = await ComfyMetadataParser().parse_metadata(json.dumps(metadata_json), scanner)
+
+    assert [entry["file_name"] for entry in result["loras"]] == ["stacked"]
+    assert [entry["weight"] for entry in result["loras"]] == [0.45]
+    assert scanner.queries == ["stacked"]
 
 
 @pytest.mark.asyncio

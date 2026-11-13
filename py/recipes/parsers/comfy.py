@@ -7,8 +7,20 @@ from typing import Dict, Any
 from ..base import RecipeMetadataParser
 from ..constants import GEN_PARAM_KEYS
 from ...services.metadata_service import get_default_metadata_provider
+from ...utils.generation_metadata import LORA_PATTERN
 
 logger = logging.getLogger(__name__)
+
+# A prompt graph stores each node's registered name (its NODE_CLASS_MAPPINGS
+# key) as class_type. LoRA Manager registers its nodes under their NAME;
+# "LoraLoaderLM", the Python class name, is kept for previously saved data.
+CORE_LORA_LOADERS = {"LoraLoader", "LoraLoaderModelOnly"}
+LORA_MANAGER_WIDGET_LOADERS = {
+    "Lora Loader (LoraManager)",
+    "Lora Stacker (LoraManager)",
+    "LoraLoaderLM",
+}
+LORA_MANAGER_TEXT_LOADERS = {"LoRA Text Loader (LoraManager)"}
 
 class ComfyMetadataParser(RecipeMetadataParser):
     """Parser for Civitai ComfyUI metadata JSON format"""
@@ -90,13 +102,26 @@ class ComfyMetadataParser(RecipeMetadataParser):
                 if not isinstance(inputs, dict):
                     continue
 
-                if node.get('class_type') == 'LoraLoader':
+                class_type = node.get('class_type')
+                if not isinstance(class_type, str):
+                    continue
+
+                if class_type in CORE_LORA_LOADERS:
                     lora_name = inputs.get('lora_name', '')
                     if isinstance(lora_name, str) and lora_name:
                         lora_candidates.append((lora_name, inputs.get('strength_model', 1.0)))
                     continue
 
-                if node.get('class_type') != 'LoraLoaderLM':
+                if class_type in LORA_MANAGER_TEXT_LOADERS:
+                    # Only a literal string can be read here; a wired input
+                    # is stored as a [node_id, output_index] link.
+                    lora_syntax = inputs.get('lora_syntax')
+                    if isinstance(lora_syntax, str):
+                        for match in LORA_PATTERN.finditer(lora_syntax):
+                            lora_candidates.append((match.group(1).strip(), match.group(2)))
+                    continue
+
+                if class_type not in LORA_MANAGER_WIDGET_LOADERS:
                     continue
 
                 loras_data = inputs.get('loras', [])
