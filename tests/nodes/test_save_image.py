@@ -1,5 +1,7 @@
 import json
 import os
+import sys
+import types
 from typing import Any, cast
 
 import numpy as np
@@ -8,6 +10,7 @@ from PIL import Image
 
 from py.services.service_registry import ServiceRegistry
 from py.nodes.save_image import SaveImageLM
+from py.utils.exif_utils import ExifUtils
 
 
 class _DummyTensor:
@@ -308,6 +311,166 @@ def test_save_image_skips_png_parameters_when_metadata_disabled_and_keeps_workfl
     with Image.open(image_path) as img:
         assert "parameters" not in img.info
         assert img.info["workflow"] == json.dumps(workflow)
+
+
+_API_PROMPT = {
+    "3": {
+        "class_type": "KSampler",
+        "inputs": {"seed": 123, "steps": 10, "model": ["4", 0]},
+    },
+    "9": {
+        "class_type": "Save Image (LoraManager)",
+        "inputs": {"images": ["8", 0], "embed_workflow": True},
+    },
+}
+
+
+def test_save_image_embeds_parameters_prompt_and_workflow_in_png(monkeypatch, tmp_path):
+    """With embed_workflow on, the PNG carries the same prompt/workflow chunks as
+    core SaveImage next to the A1111 parameters, and LoRA Manager reads all three
+    back."""
+    _configure_save_paths(monkeypatch, tmp_path)
+    _configure_metadata(monkeypatch, {"prompt": "prompt text", "seed": 123})
+
+    node = SaveImageLM()
+    workflow = {"nodes": [{"id": 9, "type": "Save Image (LoraManager)"}]}
+    node.save_images(
+        [_make_image()],
+        "ComfyUI",
+        "png",
+        id="node-1",
+        prompt=_API_PROMPT,
+        extra_pnginfo={"workflow": workflow},
+        embed_workflow=True,
+    )
+
+    image_path = tmp_path / "sample_00001_.png"
+    with Image.open(image_path) as img:
+        assert img.info["parameters"] == (
+            "prompt text\nSeed: 123, engine: ComfyUI, Version: ComfyUI"
+        )
+        assert json.loads(img.info["prompt"]) == _API_PROMPT
+        assert json.loads(img.info["workflow"]) == workflow
+
+    metadata = ExifUtils.load_structured_metadata(str(image_path))
+    assert metadata["parameters"].startswith("prompt text")
+    assert json.loads(metadata["prompt"]) == _API_PROMPT
+    assert json.loads(metadata["workflow"]) == workflow
+
+
+def test_save_image_embeds_prompt_when_api_job_sends_no_workflow(monkeypatch, tmp_path):
+    """API clients may queue a prompt without extra_pnginfo or without its
+    workflow key; the image must still be saved and carry the prompt graph."""
+    _configure_save_paths(monkeypatch, tmp_path)
+    _configure_metadata(monkeypatch, {"prompt": "prompt text", "seed": 123})
+
+    node = SaveImageLM()
+    for extra_pnginfo in (None, {}):
+        result = node.process_image(
+            [_make_image()],
+            id="node-1",
+            prompt=_API_PROMPT,
+            extra_pnginfo=extra_pnginfo,
+            embed_workflow=True,
+            add_counter_to_filename=False,
+        )
+        saved = result["ui"]["images"]
+        assert len(saved) == 1
+
+        with Image.open(tmp_path / saved[0]["filename"]) as img:
+            assert "parameters" in img.info
+            assert json.loads(img.info["prompt"]) == _API_PROMPT
+            assert "workflow" not in img.info
+
+
+def test_save_image_does_not_embed_graph_when_embed_workflow_disabled(
+    monkeypatch, tmp_path
+):
+    _configure_save_paths(monkeypatch, tmp_path)
+    _configure_metadata(monkeypatch, {"prompt": "prompt text", "seed": 123})
+
+    node = SaveImageLM()
+    node.save_images(
+        [_make_image()],
+        "ComfyUI",
+        "png",
+        id="node-1",
+        prompt=_API_PROMPT,
+        extra_pnginfo={"workflow": {"nodes": []}},
+    )
+
+    with Image.open(tmp_path / "sample_00001_.png") as img:
+        assert "parameters" in img.info
+        assert "prompt" not in img.info
+        assert "workflow" not in img.info
+
+
+def test_save_image_embeds_prompt_and_workflow_in_webp(monkeypatch, tmp_path):
+    _configure_save_paths(monkeypatch, tmp_path)
+    _configure_metadata(monkeypatch, {"prompt": "prompt text", "seed": 123})
+
+    node = SaveImageLM()
+    workflow = {"nodes": [{"id": 9}]}
+    node.save_images(
+        [_make_image()],
+        "ComfyUI",
+        "webp",
+        id="node-1",
+        prompt=_API_PROMPT,
+        extra_pnginfo={"workflow": workflow},
+        embed_workflow=True,
+    )
+
+    metadata = ExifUtils.load_structured_metadata(str(tmp_path / "sample_00001_.webp"))
+    assert metadata["parameters"].startswith("prompt text")
+    assert json.loads(metadata["prompt"]) == _API_PROMPT
+    assert json.loads(metadata["workflow"]) == workflow
+
+
+def test_save_image_webp_keeps_parameters_when_workflow_missing(monkeypatch, tmp_path):
+    """A missing workflow key used to abort the whole EXIF block."""
+    _configure_save_paths(monkeypatch, tmp_path)
+    _configure_metadata(monkeypatch, {"prompt": "prompt text", "seed": 123})
+
+    node = SaveImageLM()
+    node.save_images(
+        [_make_image()],
+        "ComfyUI",
+        "webp",
+        id="node-1",
+        prompt=_API_PROMPT,
+        extra_pnginfo={},
+        embed_workflow=True,
+    )
+
+    metadata = ExifUtils.load_structured_metadata(str(tmp_path / "sample_00001_.webp"))
+    assert metadata["parameters"].startswith("prompt text")
+    assert json.loads(metadata["prompt"]) == _API_PROMPT
+    assert metadata["workflow"] is None
+
+
+def test_save_image_honours_comfy_disable_metadata_flag(monkeypatch, tmp_path):
+    _configure_save_paths(monkeypatch, tmp_path)
+    _configure_metadata(monkeypatch, {"prompt": "prompt text", "seed": 123})
+    cli_args = types.ModuleType("comfy.cli_args")
+    setattr(cli_args, "args", types.SimpleNamespace(disable_metadata=True))
+    monkeypatch.setitem(sys.modules, "comfy.cli_args", cli_args)
+
+    node = SaveImageLM()
+    node.save_images(
+        [_make_image()],
+        "ComfyUI",
+        "png",
+        id="node-1",
+        prompt=_API_PROMPT,
+        extra_pnginfo={"workflow": {"nodes": []}},
+        embed_workflow=True,
+    )
+
+    with Image.open(tmp_path / "sample_00001_.png") as img:
+        assert "parameters" not in img.info
+        assert "prompt" not in img.info
+        assert "workflow" not in img.info
 
 
 def test_save_image_does_not_append_loras_to_prompt_by_default(monkeypatch, tmp_path):

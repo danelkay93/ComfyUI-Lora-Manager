@@ -194,6 +194,19 @@ EMBEDDING_AIR_TYPE = "embedding"
 logger = logging.getLogger(__name__)
 
 
+def _comfy_metadata_disabled() -> bool:
+    """Return True when ComfyUI was started with ``--disable-metadata``.
+
+    Core SaveImage embeds no metadata at all under that flag. Outside a ComfyUI
+    runtime (standalone mode, tests) there is no flag to honour.
+    """
+    try:
+        from comfy.cli_args import args  # pyright: ignore[reportMissingImports]
+    except ImportError:
+        return False
+    return bool(getattr(args, "disable_metadata", False))
+
+
 class SaveImageLM:
     NAME = "Save Image (LoraManager)"
     CATEGORY = "Lora Manager/utils"
@@ -273,7 +286,7 @@ class SaveImageLM:
                     "BOOLEAN",
                     {
                         "default": False,
-                        "tooltip": "When enabled, saved images store the complete workflow. Drag the image back into ComfyUI to restore the original node graph. PNG and WebP only.",
+                        "tooltip": "When enabled, saved images store the complete workflow and the executed prompt graph, like ComfyUI's Save Image. Drag the image back into ComfyUI to restore the original node graph. PNG and WebP only.",
                     },
                 ),
                 "save_with_metadata": (
@@ -908,6 +921,22 @@ class SaveImageLM:
         self._sync_recipe_cache(recipe_scanner, recipe_data, json_path)
 
     @staticmethod
+    def _serialize_graph_metadata(prompt, extra_pnginfo):
+        """Return the (prompt, workflow) JSON strings to embed; None when absent.
+
+        ``prompt`` is the API graph ComfyUI passes to every output node. Core
+        SaveImage stores it next to the workflow so that jobs queued through the
+        API, which usually carry no UI workflow, still reopen in ComfyUI. Such
+        jobs may also send ``extra_pnginfo`` without a ``workflow`` key.
+        """
+        prompt_json = json.dumps(prompt) if prompt is not None else None
+        workflow = (
+            extra_pnginfo.get("workflow") if isinstance(extra_pnginfo, dict) else None
+        )
+        workflow_json = json.dumps(workflow) if workflow is not None else None
+        return prompt_json, workflow_json
+
+    @staticmethod
     def _dedupe_existing_filename(full_output_folder, file):
         """Return (file, file_path), appending an incrementing suffix when the
         target file already exists so a counter-less save never overwrites."""
@@ -950,6 +979,18 @@ class SaveImageLM:
     ):
         """Save images with metadata"""
         results = []
+
+        # Like core SaveImage, --disable-metadata leaves saved files without any
+        # embedded metadata, whatever this node's widgets say.
+        if _comfy_metadata_disabled():
+            save_with_metadata = False
+            embed_workflow = False
+
+        prompt_json, workflow_json = None, None
+        if embed_workflow:
+            prompt_json, workflow_json = self._serialize_graph_metadata(
+                prompt, extra_pnginfo
+            )
 
         # Get metadata using the metadata collector
         raw_metadata = get_metadata()
@@ -1044,8 +1085,9 @@ class SaveImageLM:
                     assert pnginfo is not None
                     if save_with_metadata and metadata_text:
                         pnginfo.add_text("parameters", metadata_text)
-                    if embed_workflow and extra_pnginfo is not None:
-                        workflow_json = json.dumps(extra_pnginfo["workflow"])
+                    if prompt_json is not None:
+                        pnginfo.add_text("prompt", prompt_json)
+                    if workflow_json is not None:
                         pnginfo.add_text("workflow", workflow_json)
                     save_kwargs["pnginfo"] = pnginfo
                     img.save(file_path, format="PNG", **save_kwargs)
@@ -1075,13 +1117,21 @@ class SaveImageLM:
                                 + metadata_text.encode("utf-16be")
                             }
 
+                        exif_0th = {}
+                        # ComfyUI's WebP savers keep the prompt graph in the
+                        # EXIF Model tag behind a "prompt:" prefix, which is
+                        # also where ExifUtils reads it back from.
+                        if prompt_json is not None:
+                            exif_0th[piexif.ImageIFD.Model] = "prompt:" + prompt_json
+
                         # Add workflow if needed
-                        if embed_workflow and extra_pnginfo is not None:
-                            workflow_json = json.dumps(extra_pnginfo["workflow"])
-                            exif_dict["0th"] = {
-                                piexif.ImageIFD.ImageDescription: "Workflow:"
-                                + workflow_json
-                            }
+                        if workflow_json is not None:
+                            exif_0th[piexif.ImageIFD.ImageDescription] = (
+                                "Workflow:" + workflow_json
+                            )
+
+                        if exif_0th:
+                            exif_dict["0th"] = exif_0th
 
                         exif_bytes = piexif.dump(exif_dict)
                         save_kwargs["exif"] = exif_bytes
