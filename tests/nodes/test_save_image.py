@@ -450,6 +450,8 @@ def test_save_image_webp_keeps_parameters_when_workflow_missing(monkeypatch, tmp
 
 
 def test_save_image_honours_comfy_disable_metadata_flag(monkeypatch, tmp_path):
+    """--disable-metadata drops the ComfyUI graph chunks, as in core SaveImage;
+    the parameters text still follows save_with_metadata."""
     _configure_save_paths(monkeypatch, tmp_path)
     _configure_metadata(monkeypatch, {"prompt": "prompt text", "seed": 123})
     cli_args = types.ModuleType("comfy.cli_args")
@@ -468,7 +470,9 @@ def test_save_image_honours_comfy_disable_metadata_flag(monkeypatch, tmp_path):
     )
 
     with Image.open(tmp_path / "sample_00001_.png") as img:
-        assert "parameters" not in img.info
+        assert img.info["parameters"] == (
+            "prompt text\nSeed: 123, engine: ComfyUI, Version: ComfyUI"
+        )
         assert "prompt" not in img.info
         assert "workflow" not in img.info
 
